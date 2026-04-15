@@ -1,0 +1,97 @@
+name: Build native addon
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            prebuild-dir: linux-x64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            prebuild-dir: linux-arm64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            prebuild-dir: darwin-arm64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            prebuild-dir: darwin-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build native addon
+        run: cargo build --features napi --release --target ${{ matrix.target }}
+
+      - name: Copy prebuild
+        run: |
+          mkdir -p prebuilds/${{ matrix.prebuild-dir }}
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp target/${{ matrix.target }}/release/hathor_ct_crypto.dll prebuilds/${{ matrix.prebuild-dir }}/ct-crypto.node
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            cp target/${{ matrix.target }}/release/libhathor_ct_crypto.dylib prebuilds/${{ matrix.prebuild-dir }}/ct-crypto.node
+          else
+            cp target/${{ matrix.target }}/release/libhathor_ct_crypto.so prebuilds/${{ matrix.prebuild-dir }}/ct-crypto.node
+          fi
+
+      - name: Upload prebuild artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: prebuild-${{ matrix.prebuild-dir }}
+          path: prebuilds/${{ matrix.prebuild-dir }}/ct-crypto.node
+
+  # Run Rust tests (only on one platform)
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test
+
+  # Collect all prebuilds into a single artifact for local npm publish
+  collect:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all prebuild artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: prebuilds
+          pattern: prebuild-*
+          merge-multiple: false
+
+      - name: Arrange prebuilds
+        run: |
+          mkdir -p npm-package/prebuilds
+          for dir in prebuilds/prebuild-*/; do
+            platform=$(basename "$dir" | sed 's/prebuild-//')
+            mkdir -p npm-package/prebuilds/$platform
+            cp "$dir/ct-crypto.node" npm-package/prebuilds/$platform/
+          done
+          cp index.js index.d.ts package.json npm-package/
+          echo "Package contents:"
+          find npm-package -type f
+
+      - name: Upload npm package
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: npm-package/

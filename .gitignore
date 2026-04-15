@@ -1,0 +1,12 @@
+# Rust build artifacts
+target/
+Cargo.lock
+
+# Node
+node_modules/
+
+# Prebuilds (built by CI, not committed)
+prebuilds/
+
+# OS files
+.DS_Store
