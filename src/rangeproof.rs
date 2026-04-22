@@ -4,7 +4,22 @@ use secp256k1_zkp::{Generator, PedersenCommitment, RangeProof, SecretKey, Tweak,
 
 use crate::error::{HathorCtError, Result};
 
-/// Create a Bulletproof range proof proving that the committed amount is in [0, 2^64).
+/// Fixed bit-width for all range proofs.
+///
+/// The secp256k1-zkp `min_bits` parameter sizes the range proof to cover
+/// `[0, 2^min_bits)`. Leaving it at `0` ("auto") makes the proof length scale
+/// with the bit-width of the *actual* value being proved — which both leaks
+/// value magnitude through proof length and produces proofs that overflow
+/// the Hathor fullnode's byte cap. Pinning `min_bits = 40` gives every proof
+/// the same size (~3213 B) and covers values up to 2^40 − 1 ≈ 1 trillion,
+/// well above the maximum HTR token supply.
+pub const RANGE_PROOF_BITS: u8 = 40;
+
+/// Create a Borromean range proof proving that the committed amount is in [1, 2^40).
+///
+/// The proof always covers the fixed 40-bit range (see `RANGE_PROOF_BITS`) so
+/// that every proof is the same length — leaking value magnitude through
+/// proof size would otherwise defeat the privacy goal.
 ///
 /// # Arguments
 /// * `amount` - The secret value to prove is in range
@@ -39,7 +54,7 @@ pub fn create_range_proof(
         &[],        // additional_commitment
         sk,         // sk (nonce key)
         0,          // exp
-        0,          // min_bits (0 = auto)
+        RANGE_PROOF_BITS, // min_bits: fixed 40-bit range → constant ~3213 B proof
         *generator, // additional_generator
     )
     .map_err(|e| HathorCtError::RangeProofError(e.to_string()))?;
@@ -281,6 +296,29 @@ mod tests {
         assert_eq!(recovered_blinding.as_ref(), blinding.as_ref());
         // The message is padded to 4096 bytes; check that it starts with our message
         assert!(recovered_message.starts_with(msg));
+    }
+
+    #[test]
+    fn test_proof_size_is_constant() {
+        // Regression: with min_bits=0 ("auto"), proof size scaled with the
+        // value's bit-width, leaking magnitude and overflowing the fullnode's
+        // fixed-size cap for larger amounts. Pinning min_bits=RANGE_PROOF_BITS
+        // must make proof length independent of the proven value.
+        let gen = htr_asset_tag();
+        let mut sizes = Vec::new();
+        for amount in [1u64, 100, 10_000, 1_000_000, 1_000_000_000, 1_000_000_000_000] {
+            let blinding = Tweak::new(&mut rand::thread_rng());
+            let commitment = create_commitment(amount, &blinding, &gen).unwrap();
+            let proof =
+                create_range_proof(amount, &blinding, &commitment, &gen, None, None).unwrap();
+            sizes.push(serialize_range_proof(&proof).len());
+        }
+        let first = sizes[0];
+        assert!(
+            sizes.iter().all(|&s| s == first),
+            "range proof sizes vary with value: {:?}",
+            sizes
+        );
     }
 
     #[test]
