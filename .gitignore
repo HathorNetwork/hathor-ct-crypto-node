@@ -10,3 +10,7 @@ prebuilds/
 
 # OS files
 .DS_Store
+
+# Local npm package build output (CI builds the real one on tag)
+npm-package/
+npm-package.zip
